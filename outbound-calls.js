@@ -1,7 +1,8 @@
 import WebSocket from "ws";
 import Twilio from "twilio";
+import { publicOrigin, requireCallToken, requireTwilioSignature } from './request-security.js';
 
-export function registerOutboundRoutes(fastify) {
+export function registerOutboundRoutes(fastify, { client } = {}) {
   // Check for required environment variables
   const { 
     ELEVENLABS_API_KEY, 
@@ -17,7 +18,8 @@ export function registerOutboundRoutes(fastify) {
   }
 
   // Initialize Twilio client
-  const twilioClient = new Twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
+  const twilioClient = client || new Twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
+  const origin = publicOrigin();
 
   // Helper function to get signed URL for authenticated conversations
   async function getSignedUrl() {
@@ -45,18 +47,23 @@ export function registerOutboundRoutes(fastify) {
   }
 
   // Route to initiate outbound calls
-  fastify.post("/outbound-call", async (request, reply) => {
-    const { number, prompt } = request.body;
-
-    if (!number) {
-      return reply.code(400).send({ error: "Phone number is required" });
-    }
+  fastify.post("/outbound-call", {
+    onRequest: requireCallToken(),
+    schema: { body: {
+      type: 'object', required: ['number'], additionalProperties: false,
+      properties: {
+        number: { type: 'string', pattern: '^\\+[1-9][0-9]{1,14}$' },
+        prompt: { type: 'string', maxLength: 4000 },
+      },
+    } },
+  }, async (request, reply) => {
+    const { number, prompt = '' } = request.body;
 
     try {
       const call = await twilioClient.calls.create({
         from: TWILIO_PHONE_NUMBER,
         to: number,
-        url: `https://${request.headers.host}/outbound-call-twiml?prompt=${encodeURIComponent(prompt)}`
+        url: `${origin}/outbound-call-twiml?prompt=${encodeURIComponent(prompt)}`
       });
 
       reply.send({ 
@@ -74,24 +81,20 @@ export function registerOutboundRoutes(fastify) {
   });
 
   // TwiML route for outbound calls
-  fastify.all("/outbound-call-twiml", async (request, reply) => {
+  fastify.all("/outbound-call-twiml", { preValidation: requireTwilioSignature(origin) }, async (request, reply) => {
     const prompt = request.query.prompt || '';
 
-    const twimlResponse = `<?xml version="1.0" encoding="UTF-8"?>
-      <Response>
-        <Connect>
-          <Stream url="wss://${request.headers.host}/outbound-media-stream">
-            <Parameter name="prompt" value="${prompt}" />
-          </Stream>
-        </Connect>
-      </Response>`;
-
-    reply.type("text/xml").send(twimlResponse);
+    const response = new Twilio.twiml.VoiceResponse();
+    response.connect().stream({ url: `${origin.replace(/^https:/, 'wss:')}/outbound-media-stream` })
+      .parameter({ name: 'prompt', value: String(prompt) });
+    reply.type("text/xml").send(response.toString());
   });
 
   // WebSocket route for handling media streams
   fastify.register(async (fastifyInstance) => {
-    fastifyInstance.get("/outbound-media-stream", { websocket: true }, (ws, req) => {
+    fastifyInstance.get("/outbound-media-stream", {
+      websocket: true, preValidation: requireTwilioSignature(origin, { websocket: true }),
+    }, (ws, req) => {
       console.info("[Server] Twilio connected to outbound media stream");
 
       // Variables to track the call
@@ -123,7 +126,7 @@ export function registerOutboundRoutes(fastify) {
               }
             };
 
-            console.log("[ElevenLabs] Sending initial config with prompt:", initialConfig.conversation_config_override.agent.prompt.prompt);
+            console.log("[ElevenLabs] Sending initial conversation configuration");
 
             // Send the configuration to ElevenLabs
             elevenLabsWs.send(JSON.stringify(initialConfig));
@@ -218,7 +221,6 @@ export function registerOutboundRoutes(fastify) {
               callSid = msg.start.callSid;
               customParameters = msg.start.customParameters;  // Store parameters
               console.log(`[Twilio] Stream started - StreamSid: ${streamSid}, CallSid: ${callSid}`);
-              console.log('[Twilio] Start parameters:', customParameters);
               break;
 
             case "media":

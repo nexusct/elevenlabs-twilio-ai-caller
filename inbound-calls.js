@@ -1,6 +1,9 @@
 import WebSocket from "ws";
+import Twilio from 'twilio';
+import { publicOrigin, requireTwilioSignature } from './request-security.js';
 
 export function registerInboundRoutes(fastify) {
+  const origin = publicOrigin();
   // Check for the required environment variables
   const { ELEVENLABS_API_KEY, ELEVENLABS_AGENT_ID } = process.env;
 
@@ -35,20 +38,17 @@ export function registerInboundRoutes(fastify) {
   }
 
   // Route to handle incoming calls from Twilio
-  fastify.all("/incoming-call-eleven", async (request, reply) => {
-    const twimlResponse = `<?xml version="1.0" encoding="UTF-8"?>
-      <Response>
-        <Connect>
-          <Stream url="wss://${request.headers.host}/media-stream" />
-        </Connect>
-      </Response>`;
-
-    reply.type("text/xml").send(twimlResponse);
+  fastify.all("/incoming-call-eleven", { preValidation: requireTwilioSignature(origin) }, async (request, reply) => {
+    const response = new Twilio.twiml.VoiceResponse();
+    response.connect().stream({ url: `${origin.replace(/^https:/, 'wss:')}/media-stream` });
+    reply.type("text/xml").send(response.toString());
   });
 
   // WebSocket route for handling media streams from Twilio
   fastify.register(async (fastifyInstance) => {
-    fastifyInstance.get("/media-stream", { websocket: true }, async (connection, req) => {
+    fastifyInstance.get("/media-stream", {
+      websocket: true, preValidation: requireTwilioSignature(origin, { websocket: true }),
+    }, async (connection, req) => {
       console.info("[Server] Twilio connected to media stream.");
 
       let streamSid = null;
