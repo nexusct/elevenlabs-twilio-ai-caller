@@ -114,7 +114,32 @@ ELEVENLABS_API_KEY=your-elevenlabs-api-key
 TWILIO_ACCOUNT_SID=your-twilio-account-sid
 TWILIO_AUTH_TOKEN=your-twilio-auth-token
 TWILIO_PHONE_NUMBER=your-twilio-phone-number
+PUBLIC_ORIGIN=https://your-public-voice-host.example
+OUTBOUND_CALL_TOKEN=replace-with-a-random-secret-at-least-32-characters
 ```
+
+`PUBLIC_ORIGIN` must be the exact HTTPS origin Twilio calls, including the public
+port if nonstandard. It must not contain a path, credentials, query, or fragment.
+Use the public origin even when HTTPS terminates at a reverse proxy. The server
+uses it for callback URLs and signature validation and ignores incoming Host
+headers for those purposes.
+
+Generate `OUTBOUND_CALL_TOKEN` with `openssl rand -hex 32`, keep it in the hosting
+environment, and send it as `Authorization: Bearer <token>` from the trusted
+service or Make.com connection that initiates calls. Do not put it in browser
+code, URLs, or source control. An unset or short token disables outbound dialing.
+Outbound requests require an E.164 phone number and accept prompts up to 4,000
+characters. Configure destination restrictions and spending limits in Twilio.
+
+Incoming TwiML requests and both media-stream handshakes require a valid
+`X-Twilio-Signature`. Proxies must preserve that header and the original path/query.
+Use the account Auth Token for validation. See
+[Twilio's Media Streams security requirements](https://www.twilio.com/docs/voice/media-streams).
+The historical examples under `forTheLegends/` remain tutorial examples; use the
+root `index.js` entry point for these protections.
+
+Run `npm test` for local request-validation tests. Before deployment, verify a
+signed inbound call and an authorized outbound call through your actual TLS proxy.
 
 ### Install Dependencies:
 ```bash
@@ -142,5 +167,4 @@ Here are useful resources for setting up and understanding the project:
 Star ⭐ this repository if you find it helpful!
 
 Want to donate? https://bartslodyczka.gumroad.com/l/potvn
-
 
